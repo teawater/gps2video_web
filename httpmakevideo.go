@@ -174,6 +174,7 @@ func makevideoOptionsInit() {
 		max: 640,
 	}
 	show_index = append(show_index, "video_border")
+
 	makevideoOptions["video_limit_secs"] = &NumberOption{
 		BaseOption: BaseOption{
 			shortInfo: "生成视频的最大秒数",
