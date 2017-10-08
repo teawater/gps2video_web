@@ -174,6 +174,14 @@ func makevideoOptionsInit() {
 		max: 640,
 	}
 	show_index = append(show_index, "video_border")
+	makevideoOptions["video_limit_secs"] = &NumberOption{
+		BaseOption: BaseOption{
+			shortInfo: "生成视频的最大秒数",
+			longInfo:  "程序将自动设置选项video_fps, speed, photos_show_secs 和 trackinfo_show_sec。友情提醒：微信朋友圈视频限制时间为10秒。",
+		},
+		min: 3,
+	}
+	show_index = append(show_index, "video_limit_secs")
 
 	for index, option := range makevideoOptions {
 		option.Init(index)
