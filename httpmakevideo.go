@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"os/exec"
@@ -22,10 +23,8 @@ type BaseOption struct {
 	required   bool
 
 	//Used by http
-	shortInfo  string //If not set, will same with index
-	longInfo   string
-	inputType  string //If not set, will set as "text"
-	defaultVal string
+	shortInfo string //If not set, will same with index
+	longInfo  string
 
 	//true if need record to usermap
 	needRec bool
@@ -38,9 +37,6 @@ func (this *BaseOption) Init(index string) {
 	if this.shortInfo == "" {
 		this.shortInfo = index
 	}
-	if this.inputType == "" {
-		this.inputType = "text"
-	}
 }
 
 func (this *BaseOption) GetshortInfo() string {
@@ -49,14 +45,6 @@ func (this *BaseOption) GetshortInfo() string {
 
 func (this *BaseOption) GetlongInfo() string {
 	return this.longInfo
-}
-
-func (this *BaseOption) GetinputType() string {
-	return this.inputType
-}
-
-func (this *BaseOption) GetdefaultVal() string {
-	return this.defaultVal
 }
 
 func (this *BaseOption) Getrequired() bool {
@@ -86,13 +74,18 @@ func (this *BaseOption) Form2String(form []string) (val string, err error) {
 	return
 }
 
-type NumberOption struct {
+type Int64Option struct {
 	BaseOption
-	min int64
-	max int64 //If set to 0, will not check max
+	defaultVal string
+	min        int64
+	max        int64 //If set to 0, will not check max
 }
 
-func (this *NumberOption) Form2Int64(form []string) (num int64, err error) {
+func (this *Int64Option) GetHtmlInput(index string) string {
+	return `<input type="text" name="` + index + `" value="` + this.defaultVal + `">`
+}
+
+func (this *Int64Option) Form2Int64(form []string) (num int64, err error) {
 	str, err := this.Form2String(form)
 	if err != nil {
 		return
@@ -101,7 +94,7 @@ func (this *NumberOption) Form2Int64(form []string) (num int64, err error) {
 	return
 }
 
-func (this *NumberOption) Form2Config(form []string) (config string, err error) {
+func (this *Int64Option) Form2Config(form []string, uid uint64) (config string, err error) {
 	var num int64
 	if num, err = this.Form2Int64(form); err != nil {
 		return
@@ -119,63 +112,151 @@ func (this *NumberOption) Form2Config(form []string) (config string, err error) 
 	return
 }
 
+type Float64Option struct {
+	BaseOption
+}
+
+func (this *Float64Option) GetHtmlInput(index string) string {
+	return `<input type="text" name="` + index + `" value="">`
+}
+
+func (this *Float64Option) Form2Float64(form []string) (num float64, err error) {
+	str, err := this.Form2String(form)
+	if err != nil {
+		return
+	}
+	num, err = strconv.ParseFloat(str, 64)
+	return
+}
+
+type PhotosTimezoneOption struct {
+	Float64Option
+}
+
+func (this *PhotosTimezoneOption) Float642Config(num float64) (config string, err error) {
+	fi, f := math.Modf(num)
+	i := int64(fi)
+
+	if i < -12 || i > 13 || (f != 0 && f != 0.5) {
+		err = fmt.Errorf("格式不对")
+		return
+	}
+
+	if f == 0 {
+		config = fmt.Sprintf("%s=%d", this.configName, i)
+	} else {
+		config = fmt.Sprintf("%s=%f", this.configName, num)
+	}
+
+	return
+}
+
+func (this *PhotosTimezoneOption) Form2Config(form []string, uid uint64) (config string, err error) {
+	var num float64
+	if num, err = this.Form2Float64(form); err != nil {
+		return
+	}
+
+	config, err = this.Float642Config(num)
+	return
+}
+
+type BoolOption struct {
+	BaseOption
+	defaultVal bool
+}
+
+func (this *BoolOption) FormHaveData(form []string) bool {
+	return true
+}
+
+func (this *BoolOption) GetHtmlInput(index string) string {
+	checked := ""
+	if this.defaultVal {
+		checked = ` checked="checked"`
+	}
+	return fmt.Sprintf(`<input type="checkbox" name="%s" value="%s"%s>`,
+		index, index, checked)
+}
+
+type PhotosOption struct {
+	BoolOption
+}
+
+func (this *PhotosOption) Form2Config(form []string, uid uint64) (config string, err error) {
+	if len(form) < 1 {
+		return
+	}
+
+	photos_dir := filepath.Join(users.dir, fmt.Sprintf("%d", uid), "photos")
+	err = dir_check_creat(photos_dir, true)
+	if err != nil {
+		log.Println(uid, "PhotosOption Form2Config dir_check_creat:", err)
+		return
+	}
+
+	config = fmt.Sprintf("%s=%s", this.configName, photos_dir)
+	return
+}
+
 type MakevideoOptioner interface {
 	Init(index string)
 
 	GetshortInfo() string
 	GetlongInfo() string
-	GetinputType() string
-	GetdefaultVal() string
 	Getrequired() bool
 
+	GetHtmlInput(index string) string
+
 	FormHaveData(form []string) bool
-	Form2Config(form []string) (config string, err error)
+	Form2Config(form []string, uid uint64) (config string, err error)
 }
 
 var makevideoOptions map[string]MakevideoOptioner
 var show_index []string
+var photosTimezoneOption *PhotosTimezoneOption
 
 func makevideoOptionsInit() {
 	makevideoOptions = make(map[string]MakevideoOptioner)
 	show_index = make([]string, 0)
 
-	makevideoOptions["video_width"] = &NumberOption{
+	makevideoOptions["video_width"] = &Int64Option{
 		BaseOption: BaseOption{
-			shortInfo:  "视频宽度",
-			longInfo:   "google map免费版的限制，最大640。",
-			required:   true,
-			defaultVal: "640",
+			shortInfo: "视频宽度",
+			longInfo:  "google map免费版的限制，最大640。",
+			required:  true,
 		},
-		min: 1,
-		max: 640,
+		defaultVal: "640",
+		min:        1,
+		max:        640,
 	}
 	show_index = append(show_index, "video_width")
 
-	makevideoOptions["video_height"] = &NumberOption{
+	makevideoOptions["video_height"] = &Int64Option{
 		BaseOption: BaseOption{
-			shortInfo:  "视频高度",
-			longInfo:   "google map免费版的限制，最大640。",
-			required:   true,
-			defaultVal: "640",
+			shortInfo: "视频高度",
+			longInfo:  "google map免费版的限制，最大640。",
+			required:  true,
 		},
-		min: 1,
-		max: 640,
+		defaultVal: "640",
+		min:        1,
+		max:        640,
 	}
 	show_index = append(show_index, "video_height")
 
-	makevideoOptions["video_border"] = &NumberOption{
+	makevideoOptions["video_border"] = &Int64Option{
 		BaseOption: BaseOption{
-			shortInfo:  "边框宽度",
-			longInfo:   "视频中轨迹到边框的距离",
-			required:   true,
-			defaultVal: "10",
+			shortInfo: "边框宽度",
+			longInfo:  "视频中轨迹到边框的距离",
+			required:  true,
 		},
-		min: 1,
-		max: 640,
+		defaultVal: "10",
+		min:        1,
+		max:        640,
 	}
 	show_index = append(show_index, "video_border")
 
-	makevideoOptions["video_limit_secs"] = &NumberOption{
+	makevideoOptions["video_limit_secs"] = &Int64Option{
 		BaseOption: BaseOption{
 			shortInfo: "生成视频的最大秒数",
 			longInfo:  "程序将自动设置选项video_fps, speed, photos_show_secs 和 trackinfo_show_sec。友情提醒：微信朋友圈视频限制时间为10秒。",
@@ -183,6 +264,38 @@ func makevideoOptionsInit() {
 		min: 3,
 	}
 	show_index = append(show_index, "video_limit_secs")
+
+	makevideoOptions["photos_dir"] = &PhotosOption{
+		BoolOption: BoolOption{
+			BaseOption: BaseOption{
+				shortInfo: "在视频中增加照片",
+				longInfo:  `视频中插入照片的文件或者目录，软件会根据` + fmt.Sprintf(`<a href="%s">图片管理</a>`, serverConf.DomainDir+web_photos) + `中照片的exif信息中的拍照时间插入视频。<br>注意exif信息有可能在转换过程中被删除。<br>微信传输图片需要使用原图，否则exif信息将被删除。<br>时间不在轨迹时间中的图片将不会被插入视频。`,
+			},
+			defaultVal: true,
+		},
+	}
+	show_index = append(show_index, "photos_dir")
+
+	photosTimezoneOption = &PhotosTimezoneOption{
+		Float64Option: Float64Option{
+			BaseOption: BaseOption{
+				shortInfo: "照片所在的时区值",
+				longInfo:  "因为轨迹文件提供的时间是UTC时间，而exif信息中的拍照时间是当地时间，这就需要有个转换过程。<br>格式举例:8或者-11或者3.5。<br>如果不设置则自动从轨迹信息中取得时区信息。此处是不是很高科技，来点掌声吧！",
+			},
+		},
+	}
+	makevideoOptions["photos_timezone"] = photosTimezoneOption
+	show_index = append(show_index, "photos_timezone")
+
+	makevideoOptions["photos_show_secs"] = &Int64Option{
+		BaseOption: BaseOption{
+			shortInfo: "照片显示秒数",
+			longInfo:  "不设置则自动被设置为2秒。",
+		},
+		defaultVal: "2",
+		min:        1,
+	}
+	show_index = append(show_index, "photos_show_secs")
 
 	for index, option := range makevideoOptions {
 		option.Init(index)
@@ -212,6 +325,7 @@ func makevideoHandler(w http.ResponseWriter, r *http.Request) {
 		if truck_id, err = strconv.ParseInt(truck, 10, 64); err != nil {
 			return
 		}
+		delete(r.Form, "truck")
 
 		var video_width, video_height, video_border int64
 
@@ -231,7 +345,7 @@ func makevideoHandler(w http.ResponseWriter, r *http.Request) {
 				httpShowError(w, option.GetshortInfo()+"没有设置")
 				return
 			}
-			c, err := option.Form2Config(form)
+			c, err := option.Form2Config(form, uid)
 			if err != nil {
 				httpShowError(w, option.GetshortInfo()+err.Error())
 				return
@@ -240,7 +354,7 @@ func makevideoHandler(w http.ResponseWriter, r *http.Request) {
 
 			if index == "video_width" || index == "video_height" || index == "video_border" {
 				//err doesn't need check because form is used in option.Form2Config
-				num, _ := option.(*NumberOption).Form2Int64(form)
+				num, _ := option.(*Int64Option).Form2Int64(form)
 				switch index {
 				case "video_width":
 					video_width = num
@@ -261,6 +375,7 @@ func makevideoHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		gotPhotosTimezoneOption := false
 		config += "[optional]\n"
 		for index, form := range r.Form {
 			option, ok := makevideoOptions[index]
@@ -270,13 +385,28 @@ func makevideoHandler(w http.ResponseWriter, r *http.Request) {
 			if !option.FormHaveData(form) {
 				continue
 			}
-			c, err := option.Form2Config(form)
+			c, err := option.Form2Config(form, uid)
 			if err != nil {
 				httpShowError(w, option.GetshortInfo()+err.Error())
 				return
 			}
 			config += c + "\n"
+
+			if index == "photos_timezone" {
+				gotPhotosTimezoneOption = true
+			}
 		}
+		//Get activity.StartDate and activity.StartDateLocal
+		activity, err := strava.NewActivitiesService(client).Get(truck_id).IncludeAllEfforts().Do()
+		if err != nil {
+			httpShowError(w, "strava出错:"+err.Error())
+			return
+		}
+		if !gotPhotosTimezoneOption {
+			c, _ := photosTimezoneOption.Float642Config(activity.StartDateLocal.Sub(activity.StartDate).Hours())
+			config += c + "\n"
+		}
+
 		config += "output_dir=" + output_dir + "\n"
 
 		if dir_check_creat(output_dir, true) != nil {
@@ -307,13 +437,6 @@ func makevideoHandler(w http.ResponseWriter, r *http.Request) {
 		}
 
 		//Truck
-		//Get activity.StartDate
-		activity, err := strava.NewActivitiesService(client).Get(truck_id).IncludeAllEfforts().Do()
-		if err != nil {
-			httpShowError(w, "strava出错:"+err.Error())
-			return
-		}
-
 		streams, err := strava.NewActivityStreamsService(client).Get(truck_id, []strava.StreamType{strava.StreamTypes.Location,
 			strava.StreamTypes.Elevation,
 			strava.StreamTypes.Time}).Do()
@@ -411,7 +534,7 @@ func makevideoHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		show += option.GetshortInfo() + `<br>`
 		show += option.GetlongInfo() + `<br>`
-		show += `<input type="` + option.GetinputType() + `" name="` + index + `" value="` + option.GetdefaultVal() + `">`
+		show += option.GetHtmlInput(index)
 		show += `<br><br>`
 	}
 	show += `<input type="submit" value="Submit" /> <input type="reset" value="Reset" /></form>`

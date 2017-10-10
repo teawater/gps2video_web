@@ -229,6 +229,7 @@ func indexHandler(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, `<a href="%s">视频下载</a><br><br>`, serverConf.DomainDir+web_video)
 	}
 
+	fmt.Fprintln(w, `<a href="https://github.com/teawater/gps2video_web">关于</a>`)
 	httpTail(w)
 }
 
