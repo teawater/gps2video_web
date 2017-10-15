@@ -11,7 +11,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/strava/go.strava"
+	"github.com/teawater/go.strava"
 )
 
 const web_logout = "logout"
@@ -20,6 +20,7 @@ const web_photos = "photos"
 const web_makevideo = "makevideo"
 const web_video = "v.mp4"
 const activity_layout = "2006-01-02 15:04:05"
+const stravaphotos_layout = "2006:01:02 15:04:05"
 const photo_layout = "20060102150405"
 
 func httpInit() {

@@ -8,7 +8,7 @@ import (
 	"os"
 
 	"github.com/koding/multiconfig"
-	"github.com/strava/go.strava"
+	"github.com/teawater/go.strava"
 )
 
 type Server struct {

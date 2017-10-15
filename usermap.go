@@ -77,7 +77,7 @@ func (u *UserMap) Init(dir string) {
 				return nil
 			}
 			if exist {
-				go makeVideo(output_dir)
+				go makeVideo(output_dir, nil)
 			}
 
 			log.Println("Add ", uid, user.Token)

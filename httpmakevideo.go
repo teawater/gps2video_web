@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"math"
 	"net/http"
@@ -13,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/strava/go.strava"
+	"github.com/teawater/go.strava"
 	"github.com/tkrajina/gpxgo/gpx"
 )
 
@@ -161,38 +162,50 @@ func (this *PhotosTimezoneOption) Form2Config(form []string, uid uint64) (config
 	return
 }
 
-type BoolOption struct {
+type ListOption struct {
 	BaseOption
-	defaultVal bool
+	defaultVal string
+	Val        []string
+	Info       []string
 }
 
-func (this *BoolOption) FormHaveData(form []string) bool {
-	return true
-}
-
-func (this *BoolOption) GetHtmlInput(index string) string {
-	checked := ""
-	if this.defaultVal {
-		checked = ` checked="checked"`
+func (this *ListOption) GetHtmlInput(index string) string {
+	ret := ""
+	for i := range this.Info {
+		checked := ""
+		if this.Val[i] == this.defaultVal {
+			checked = ` checked="checked"`
+		}
+		ret += `<input type="radio" name="` + index + `" value="` + this.Val[i] + `"` + checked + `>`
+		ret += this.Info[i] + `<br>`
 	}
-	return fmt.Sprintf(`<input type="checkbox" name="%s" value="%s"%s>`,
-		index, index, checked)
+	return ret
 }
 
 type PhotosOption struct {
-	BoolOption
+	ListOption
 }
 
 func (this *PhotosOption) Form2Config(form []string, uid uint64) (config string, err error) {
-	if len(form) < 1 {
+	str, err := this.Form2String(form)
+	if err != nil {
 		return
 	}
 
-	photos_dir := filepath.Join(users.dir, fmt.Sprintf("%d", uid), "photos")
-	err = dir_check_creat(photos_dir, true)
-	if err != nil {
-		log.Println(uid, "PhotosOption Form2Config dir_check_creat:", err)
+	if str == "none" {
 		return
+	}
+
+	var photos_dir string
+	if str == "local" {
+		photos_dir = filepath.Join(users.dir, fmt.Sprintf("%d", uid), "photos")
+		err = dir_check_creat(photos_dir, true)
+		if err != nil {
+			log.Println(uid, "PhotosOption Form2Config dir_check_creat:", err)
+			return
+		}
+	} else {
+		photos_dir = filepath.Join(users.dir, fmt.Sprintf("%d", uid), "output", "photos")
 	}
 
 	config = fmt.Sprintf("%s=%s", this.configName, photos_dir)
@@ -266,12 +279,14 @@ func makevideoOptionsInit() {
 	show_index = append(show_index, "video_limit_secs")
 
 	makevideoOptions["photos_dir"] = &PhotosOption{
-		BoolOption: BoolOption{
+		ListOption: ListOption{
 			BaseOption: BaseOption{
 				shortInfo: "在视频中增加照片",
-				longInfo:  `视频中插入照片的文件或者目录，软件会根据` + fmt.Sprintf(`<a href="%s">图片管理</a>`, serverConf.DomainDir+web_photos) + `中照片的exif信息中的拍照时间插入视频。<br>注意exif信息有可能在转换过程中被删除。<br>微信传输图片需要使用原图，否则exif信息将被删除。<br>时间不在轨迹时间中的图片将不会被插入视频。`,
+				longInfo:  `视频中插入照片，软件会根据照片的exif信息中的拍照时间插入视频。<br>注意exif信息有可能在转换过程中被删除。<br>微信传输图片需要使用原图，否则exif信息将被删除。<br>时间不在轨迹时间中的图片将不会被插入视频。`,
 			},
-			defaultVal: true,
+			defaultVal: "strava",
+			Val:        []string{"strava", "local", "none"},
+			Info:       []string{"从strava取照片", `从<a href="%s">图片管理</a>取照片`, "不增加照片"},
 		},
 	}
 	show_index = append(show_index, "photos_dir")
@@ -280,7 +295,7 @@ func makevideoOptionsInit() {
 		Float64Option: Float64Option{
 			BaseOption: BaseOption{
 				shortInfo: "照片所在的时区值",
-				longInfo:  "因为轨迹文件提供的时间是UTC时间，而exif信息中的拍照时间是当地时间，这就需要有个转换过程。<br>格式举例:8或者-11或者3.5。<br>如果不设置则自动从轨迹信息中取得时区信息。此处是不是很高科技，来点掌声吧！",
+				longInfo:  "因为轨迹文件提供的时间是UTC时间，而exif信息中的拍照时间是当地时间，这就需要有个转换过程。<br>格式举例:8或者-11或者3.5。<br>如果不设置则自动从轨迹信息中取得时区信息。",
 			},
 		},
 	}
@@ -302,6 +317,12 @@ func makevideoOptionsInit() {
 	}
 }
 
+type GetStravaPhotos struct {
+	token    string
+	truck_id int64
+	size     int64
+}
+
 func makevideoHandler(w http.ResponseWriter, r *http.Request) {
 	uid, token, err := checkCookie(r)
 	if err != nil {
@@ -313,6 +334,9 @@ func makevideoHandler(w http.ResponseWriter, r *http.Request) {
 	output_dir := filepath.Join(users.dir, fmt.Sprintf("%d", uid), "output")
 
 	if r.Method == "POST" {
+		getStravaPhotos := new(GetStravaPhotos)
+		getStravaPhotos.token = token
+
 		r.ParseForm()
 
 		//Get truck
@@ -325,6 +349,7 @@ func makevideoHandler(w http.ResponseWriter, r *http.Request) {
 		if truck_id, err = strconv.ParseInt(truck, 10, 64); err != nil {
 			return
 		}
+		getStravaPhotos.truck_id = truck_id
 		delete(r.Form, "truck")
 
 		var video_width, video_height, video_border int64
@@ -374,8 +399,14 @@ func makevideoHandler(w http.ResponseWriter, r *http.Request) {
 			httpShowError(w, "你把边框宽度设置这么大浏览器会爆炸的")
 			return
 		}
+		if video_width > video_height {
+			getStravaPhotos.size = video_width
+		} else {
+			getStravaPhotos.size = video_height
+		}
 
 		gotPhotosTimezoneOption := false
+		needGetStravaPhotos := false
 		config += "[optional]\n"
 		for index, form := range r.Form {
 			option, ok := makevideoOptions[index]
@@ -394,6 +425,12 @@ func makevideoHandler(w http.ResponseWriter, r *http.Request) {
 
 			if index == "photos_timezone" {
 				gotPhotosTimezoneOption = true
+			}
+			if index == "photos_dir" {
+				photo, _ := option.(*PhotosOption).Form2String(form)
+				if photo == "strava" {
+					needGetStravaPhotos = true
+				}
 			}
 		}
 		//Get activity.StartDate and activity.StartDateLocal
@@ -493,7 +530,11 @@ func makevideoHandler(w http.ResponseWriter, r *http.Request) {
 		need_remove = false
 		httpReturnHome(w, "开始生成")
 
-		go makeVideo(output_dir)
+		if !needGetStravaPhotos {
+			getStravaPhotos = nil
+		}
+
+		go makeVideo(output_dir, getStravaPhotos)
 
 		return
 	}
@@ -542,10 +583,61 @@ func makevideoHandler(w http.ResponseWriter, r *http.Request) {
 	httpTail(w)
 }
 
-func makeVideo(output_dir string) {
+func makeVideo(output_dir string, getStravaPhotos *GetStravaPhotos) {
 	defer os.RemoveAll(output_dir)
 
-	cmd := exec.Command("python", serverConf.GPS2VideoDir, filepath.Join(output_dir, "config.ini"))
+	config_dir := filepath.Join(output_dir, "config.ini")
+
+	if getStravaPhotos != nil {
+		photos_dir := filepath.Join(output_dir, "photos")
+		err := dir_check_creat(photos_dir, true)
+		if err != nil {
+			log.Println("makeVideo dir_check_creat:", photos_dir, err)
+			return
+		}
+
+		photos, err := strava.NewActivitiesService(strava.NewClient(getStravaPhotos.token)).ListPhotos(getStravaPhotos.truck_id).Size(uint(getStravaPhotos.size)).Do()
+		if err != nil {
+			log.Println("makeVideo ListPhotos:", photos_dir, err)
+			return
+		}
+
+		config_fp, err := os.OpenFile(config_dir, os.O_WRONLY|os.O_APPEND, 0600)
+		if err != nil {
+			log.Println("makeVideo os.OpenFile:", photos_dir, err)
+			return
+		}
+
+		for i := range photos {
+			url := photos[i].Urls[fmt.Sprintf("%d", getStravaPhotos.size)]
+			res, err := http.Get(url)
+			if err != nil {
+				log.Println("makeVideo http.Get:", photos_dir, err)
+				return
+			}
+			photo := fmt.Sprintf("%d.jpg", i)
+			f, err := os.Create(filepath.Join(photos_dir, photo))
+			if err != nil {
+				log.Println("makeVideo os.Create:", photos_dir, err)
+				return
+			}
+			if _, err := io.Copy(f, res.Body); err != nil {
+				log.Println("makeVideo io.Copy:", photos_dir, err)
+				return
+			}
+			f.Close()
+
+			_, err = fmt.Fprintf(config_fp, "\n[%s]\ncreated_at=%s\n", photo, photos[i].CreatedAt.Format(stravaphotos_layout))
+			if err != nil {
+				log.Println("makeVideo fmt.Fprintln", photos_dir, err)
+				return
+			}
+		}
+
+		config_fp.Close()
+	}
+
+	cmd := exec.Command("python", serverConf.GPS2VideoDir, config_dir)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		log.Println("makeVideo", "cmd.CombinedOutput", output_dir, err)
