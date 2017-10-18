@@ -639,11 +639,11 @@ func makeVideo(uid uint64, token string, options *MakeVideoOptions) {
 
 	cmd := exec.Command("python", serverConf.GPS2VideoDir, config_dir)
 	out, err := cmd.CombinedOutput()
+	out_string := string(out)
 	if err != nil {
-		log.Println("makeVideo", "cmd.CombinedOutput", output_dir, err)
+		log.Println("makeVideo", "cmd.CombinedOutput", output_dir, err, out_string)
 		return
 	}
-	out_string := string(out)
 
 	if strings.Contains(out_string, "视频生成成功") {
 		err := os.Rename(filepath.Join(output_dir, "v.mp4"),
