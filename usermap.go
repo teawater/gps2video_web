@@ -10,8 +10,16 @@ import (
 	"sync"
 )
 
+const (
+	UserNormal = iota
+	UserMakingVideo
+	UserMakeVideoFail
+)
+
 type User struct {
-	Token string
+	Token    string
+	Status   int
+	Moptions MakeVideoOptions
 }
 
 type UserMap struct {
@@ -69,15 +77,9 @@ func (u *UserMap) Init(dir string) {
 			u.uid2user[uid] = user
 			u.token2uid[user.Token] = uid
 
-			output_dir := filepath.Join(users.dir, fmt.Sprintf("%d", uid), "output")
-			exist, err := fileIsExist(output_dir)
-			if err != nil {
-				log.Println(uid, "Init fileIsExist:", output_dir, err)
-				os.RemoveAll(path)
-				return nil
-			}
-			if exist {
-				go makeVideo(output_dir, nil)
+			if user.Status == UserMakingVideo {
+				log.Println("ReMakingVideo", uid)
+				go makeVideo(uid, user.Token, &user.Moptions)
 			}
 
 			log.Println("Add ", uid, user.Token)
@@ -100,7 +102,19 @@ func (u *UserMap) Check(uid uint64, token string) bool {
 	return true
 }
 
-func (u *UserMap) Find_add(token string) (uid uint64, err error) {
+//Must hold u.lock.Lock
+func (u *UserMap) Write(userDir string, user *User) error {
+	fd, err := os.Create(filepath.Join(userDir, "user.gob"))
+	if err != nil {
+		return err
+	}
+	defer fd.Close()
+	enc := gob.NewEncoder(fd)
+	err = enc.Encode(user)
+	return nil
+}
+
+func (u *UserMap) FindAdd(token string) (uid uint64, err error) {
 	u.lock.Lock()
 	defer u.lock.Unlock()
 
@@ -115,27 +129,23 @@ func (u *UserMap) Find_add(token string) (uid uint64, err error) {
 				break
 			}
 		}
-		user_dir := filepath.Join(u.dir, fmt.Sprintf("%d", uid))
+		userDir := filepath.Join(u.dir, fmt.Sprintf("%d", uid))
 
-		if err = os.RemoveAll(user_dir); err != nil {
+		//Create userDir
+		if err = os.RemoveAll(userDir); err != nil {
 			return
 		}
-		if err = os.Mkdir(user_dir, os.FileMode(0700)); err != nil {
+		if err = os.Mkdir(userDir, os.FileMode(0700)); err != nil {
 			return
 		}
-		var fd *os.File
-		if fd, err = os.Create(filepath.Join(user_dir, "user.gob")); err != nil {
-			return
-		}
-		defer fd.Close()
-		enc := gob.NewEncoder(fd)
 
 		//Get user
 		user := new(User)
 		user.Token = token
+		user.Status = UserNormal
 
-		if err = enc.Encode(user); err != nil {
-			os.RemoveAll(user_dir)
+		if err = u.Write(userDir, user); err != nil {
+			os.RemoveAll(userDir)
 			return
 		}
 
@@ -143,5 +153,49 @@ func (u *UserMap) Find_add(token string) (uid uint64, err error) {
 		u.uid2user[uid] = user
 		u.last_uid = uid
 	}
+	return
+}
+
+func (u *UserMap) GetUserStatus(uid uint64) (status int, err error) {
+	u.lock.RLock()
+	defer u.lock.RUnlock()
+
+	user, ok := u.uid2user[uid]
+	if !ok {
+		err = fmt.Errorf("查找客户%d失败", uid)
+		return
+	}
+
+	status = user.Status
+	return
+}
+
+func (u *UserMap) SetUserStatus(uid uint64, status int, options *MakeVideoOptions) (err error) {
+	u.lock.Lock()
+	defer u.lock.Unlock()
+
+	user, ok := u.uid2user[uid]
+	if !ok {
+		err = fmt.Errorf("查找客户%d失败", uid)
+		return
+	}
+	if status < UserNormal || status > UserMakeVideoFail {
+		err = fmt.Errorf("设置客户%d状态%d失败", uid, status)
+		return
+	}
+
+	old_status := user.Status
+	user.Status = status
+
+	if options != nil {
+		user.Moptions = *options
+	}
+
+	userDir := filepath.Join(u.dir, fmt.Sprintf("%d", uid))
+	if err = u.Write(userDir, user); err != nil {
+		user.Status = old_status
+		return
+	}
+
 	return
 }

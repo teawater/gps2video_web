@@ -317,10 +317,10 @@ func makevideoOptionsInit() {
 	}
 }
 
-type GetStravaPhotos struct {
-	token    string
-	truck_id int64
-	size     int64
+type MakeVideoOptions struct {
+	TruckId         int64
+	UseStravaPhotos bool
+	StravaPhotoSize int64
 }
 
 func makevideoHandler(w http.ResponseWriter, r *http.Request) {
@@ -330,12 +330,20 @@ func makevideoHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	status, err := users.GetUserStatus(uid)
+	if err != nil {
+		log.Println(uid, "makevideoHandler users.GetUserStatus:", err)
+		w.WriteHeader(403)
+	}
+	if status == UserMakingVideo {
+		httpReturnHome(w, "正在生成一个视频")
+		return
+	}
+
 	client := strava.NewClient(token)
-	output_dir := filepath.Join(users.dir, fmt.Sprintf("%d", uid), "output")
 
 	if r.Method == "POST" {
-		getStravaPhotos := new(GetStravaPhotos)
-		getStravaPhotos.token = token
+		moptions := new(MakeVideoOptions)
 
 		r.ParseForm()
 
@@ -349,8 +357,15 @@ func makevideoHandler(w http.ResponseWriter, r *http.Request) {
 		if truck_id, err = strconv.ParseInt(truck, 10, 64); err != nil {
 			return
 		}
-		getStravaPhotos.truck_id = truck_id
+		moptions.TruckId = truck_id
 		delete(r.Form, "truck")
+
+		output_dir := filepath.Join(users.dir, fmt.Sprintf("%d", uid), "output")
+		if dir_check_creat(output_dir, true) != nil {
+			log.Println(uid, "makevideoHandler dir_check_creat:", err)
+			w.WriteHeader(403)
+			return
+		}
 
 		var video_width, video_height, video_border int64
 
@@ -400,13 +415,13 @@ func makevideoHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if video_width > video_height {
-			getStravaPhotos.size = video_width
+			moptions.StravaPhotoSize = video_width
 		} else {
-			getStravaPhotos.size = video_height
+			moptions.StravaPhotoSize = video_height
 		}
 
 		gotPhotosTimezoneOption := false
-		needGetStravaPhotos := false
+		moptions.UseStravaPhotos = false
 		config += "[optional]\n"
 		for index, form := range r.Form {
 			option, ok := makevideoOptions[index]
@@ -429,7 +444,7 @@ func makevideoHandler(w http.ResponseWriter, r *http.Request) {
 			if index == "photos_dir" {
 				photo, _ := option.(*PhotosOption).Form2String(form)
 				if photo == "strava" {
-					needGetStravaPhotos = true
+					moptions.UseStravaPhotos = true
 				}
 			}
 		}
@@ -445,18 +460,6 @@ func makevideoHandler(w http.ResponseWriter, r *http.Request) {
 		}
 
 		config += "output_dir=" + output_dir + "\n"
-
-		if dir_check_creat(output_dir, true) != nil {
-			log.Println(uid, "makevideoHandler dir_check_creat:", err)
-			w.WriteHeader(403)
-			return
-		}
-		need_remove := true
-		defer func() {
-			if need_remove {
-				os.RemoveAll(output_dir)
-			}
-		}()
 
 		config_name := filepath.Join(output_dir, "config.ini")
 		config_fp, err := os.Create(config_name)
@@ -525,16 +528,16 @@ func makevideoHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		os.Remove(filepath.Join(output_dir, "..", "v.mp4"))
-		os.Remove(filepath.Join(output_dir, "..", "error"))
-		need_remove = false
-		httpReturnHome(w, "开始生成")
-
-		if !needGetStravaPhotos {
-			getStravaPhotos = nil
+		err = users.SetUserStatus(uid, UserMakingVideo, moptions)
+		if err != nil {
+			log.Println(uid, "makevideoHandler users.GetUserStatus:", err)
+			w.WriteHeader(403)
+			return
 		}
 
-		go makeVideo(output_dir, getStravaPhotos)
+		httpReturnHome(w, "开始生成")
+
+		go makeVideo(uid, token, moptions)
 
 		return
 	}
@@ -542,17 +545,6 @@ func makevideoHandler(w http.ResponseWriter, r *http.Request) {
 	activities, err := strava.NewCurrentAthleteService(client).ListActivities().Do()
 	if err != nil {
 		httpShowError(w, "strava出错:"+err.Error())
-		return
-	}
-
-	exist, err := fileIsExist(output_dir)
-	if err != nil {
-		log.Println(uid, "makevideoHandler fileIsExist:", output_dir, err)
-		w.WriteHeader(403)
-		return
-	}
-	if exist {
-		httpReturnHome(w, "正在生成一个视频")
 		return
 	}
 
@@ -583,20 +575,28 @@ func makevideoHandler(w http.ResponseWriter, r *http.Request) {
 	httpTail(w)
 }
 
-func makeVideo(output_dir string, getStravaPhotos *GetStravaPhotos) {
-	defer os.RemoveAll(output_dir)
+func makeVideo(uid uint64, token string, options *MakeVideoOptions) {
+	status := UserMakeVideoFail
+	defer func() {
+		err := users.SetUserStatus(uid, status, nil)
+		if err != nil {
+			log.Println(uid, "makeVideo users.SetUserStatus:", err)
+		}
+	}()
 
+	output_dir := filepath.Join(users.dir, fmt.Sprintf("%d", uid), "output")
 	config_dir := filepath.Join(output_dir, "config.ini")
 
-	if getStravaPhotos != nil {
+	if options.UseStravaPhotos {
 		photos_dir := filepath.Join(output_dir, "photos")
+		os.RemoveAll(photos_dir)
 		err := dir_check_creat(photos_dir, true)
 		if err != nil {
 			log.Println("makeVideo dir_check_creat:", photos_dir, err)
 			return
 		}
 
-		photos, err := strava.NewActivitiesService(strava.NewClient(getStravaPhotos.token)).ListPhotos(getStravaPhotos.truck_id).Size(uint(getStravaPhotos.size)).Do()
+		photos, err := strava.NewActivitiesService(strava.NewClient(token)).ListPhotos(options.TruckId).Size(uint(options.StravaPhotoSize)).Do()
 		if err != nil {
 			log.Println("makeVideo ListPhotos:", photos_dir, err)
 			return
@@ -609,7 +609,7 @@ func makeVideo(output_dir string, getStravaPhotos *GetStravaPhotos) {
 		}
 
 		for i := range photos {
-			url := photos[i].Urls[fmt.Sprintf("%d", getStravaPhotos.size)]
+			url := photos[i].Urls[fmt.Sprintf("%d", options.StravaPhotoSize)]
 			res, err := http.Get(url)
 			if err != nil {
 				log.Println("makeVideo http.Get:", photos_dir, err)
@@ -651,8 +651,8 @@ func makeVideo(output_dir string, getStravaPhotos *GetStravaPhotos) {
 		if err != nil {
 			log.Println("makeVideo", "os.Rename", output_dir, err)
 		}
+		status = UserNormal
 	} else {
 		log.Println("makeVideo", out_string)
-		os.Create(filepath.Join(output_dir, "..", "error"))
 	}
 }

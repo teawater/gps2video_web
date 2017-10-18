@@ -94,7 +94,7 @@ func checkCookie(r *http.Request) (uid uint64, token string, err error) {
 }
 
 func addCookie(w http.ResponseWriter, token string) (err error) {
-	uid, err := users.Find_add(token)
+	uid, err := users.FindAdd(token)
 	if err != nil {
 		return
 	}
@@ -193,34 +193,24 @@ func indexHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, `<a href="%s">退出登录</a><br><br>`, serverConf.DomainDir+web_logout)
 	fmt.Fprintf(w, `<a href="%s">图片管理</a><br><br>`, serverConf.DomainDir+web_photos)
 
-	user_dir := filepath.Join(users.dir, fmt.Sprintf("%d", uid))
-
-	output_dir := filepath.Join(user_dir, "output")
-	exist, err := fileIsExist(output_dir)
+	status, err := users.GetUserStatus(uid)
 	if err != nil {
-		log.Println(uid, "makevideoHandler fileIsExist:", output_dir, err)
+		log.Println(uid, "indexHandler users.GetUserStatus:", err)
 		w.WriteHeader(403)
-		return
 	}
-	if exist {
+
+	if status == UserMakingVideo {
 		fmt.Fprintf(w, `一个视频正在生成中<br><br>`)
 	} else {
 		fmt.Fprintf(w, `<a href="%s">生成视频</a><br><br>`, serverConf.DomainDir+web_makevideo)
 	}
 
-	error_dir := filepath.Join(user_dir, "error")
-	exist, err = fileIsExist(error_dir)
-	if err != nil {
-		log.Println(uid, "makevideoHandler fileIsExist:", error_dir, err)
-		w.WriteHeader(403)
-		return
-	}
-	if exist {
+	if status == UserMakeVideoFail {
 		fmt.Fprintf(w, `很遗憾，之前的视频生成出错了。<br><br>`)
 	}
 
-	video_dir := filepath.Join(user_dir, "v.mp4")
-	exist, err = fileIsExist(video_dir)
+	video_dir := filepath.Join(users.dir, fmt.Sprintf("%d", uid), "v.mp4")
+	exist, err := fileIsExist(video_dir)
 	if err != nil {
 		log.Println(uid, "makevideoHandler fileIsExist:", video_dir, err)
 		w.WriteHeader(403)
