@@ -528,7 +528,7 @@ func makevideoHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		err = users.SetUserStatus(uid, UserMakingVideo, moptions)
+		err = users.SetUserStatus(uid, UserMakingVideo, moptions, "")
 		if err != nil {
 			log.Println(uid, "makevideoHandler users.GetUserStatus:", err)
 			w.WriteHeader(403)
@@ -577,8 +577,9 @@ func makevideoHandler(w http.ResponseWriter, r *http.Request) {
 
 func makeVideo(uid uint64, token string, options *MakeVideoOptions) {
 	status := UserMakeVideoFail
+	var reason string
 	defer func() {
-		err := users.SetUserStatus(uid, status, nil)
+		err := users.SetUserStatus(uid, status, nil, reason)
 		if err != nil {
 			log.Println(uid, "makeVideo users.SetUserStatus:", err)
 		}
@@ -588,6 +589,8 @@ func makeVideo(uid uint64, token string, options *MakeVideoOptions) {
 	config_dir := filepath.Join(output_dir, "config.ini")
 
 	if options.UseStravaPhotos {
+		reason = "从Strava下载照片出错"
+
 		photos_dir := filepath.Join(output_dir, "photos")
 		os.RemoveAll(photos_dir)
 		err := dir_check_creat(photos_dir, true)
@@ -637,6 +640,7 @@ func makeVideo(uid uint64, token string, options *MakeVideoOptions) {
 		config_fp.Close()
 	}
 
+	reason = "GPS2Video程序执行出错"
 	cmd := exec.Command("python", serverConf.GPS2VideoDir, config_dir)
 	out, err := cmd.CombinedOutput()
 	out_string := string(out)
@@ -652,6 +656,7 @@ func makeVideo(uid uint64, token string, options *MakeVideoOptions) {
 			log.Println("makeVideo", "os.Rename", output_dir, err)
 		}
 		status = UserNormal
+		reason = ""
 	} else {
 		log.Println("makeVideo", out_string)
 	}

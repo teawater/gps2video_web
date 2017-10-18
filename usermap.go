@@ -17,9 +17,11 @@ const (
 )
 
 type User struct {
-	Token    string
-	Status   int
-	Moptions MakeVideoOptions
+	Token  string
+	Status int
+
+	Moptions            MakeVideoOptions
+	MakeVideoFailReason string
 }
 
 type UserMap struct {
@@ -170,7 +172,7 @@ func (u *UserMap) GetUserStatus(uid uint64) (status int, err error) {
 	return
 }
 
-func (u *UserMap) SetUserStatus(uid uint64, status int, options *MakeVideoOptions) (err error) {
+func (u *UserMap) SetUserStatus(uid uint64, status int, options *MakeVideoOptions, reason string) (err error) {
 	u.lock.Lock()
 	defer u.lock.Unlock()
 
@@ -186,6 +188,7 @@ func (u *UserMap) SetUserStatus(uid uint64, status int, options *MakeVideoOption
 
 	old_status := user.Status
 	user.Status = status
+	user.MakeVideoFailReason = reason
 
 	if options != nil {
 		user.Moptions = *options
@@ -197,5 +200,19 @@ func (u *UserMap) SetUserStatus(uid uint64, status int, options *MakeVideoOption
 		return
 	}
 
+	return
+}
+
+func (u *UserMap) GetUserMakeVideoFailReason(uid uint64) (reason string) {
+	u.lock.RLock()
+	defer u.lock.RUnlock()
+
+	user, ok := u.uid2user[uid]
+	if !ok {
+		reason = ""
+		return
+	}
+
+	reason = user.MakeVideoFailReason
 	return
 }

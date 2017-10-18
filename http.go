@@ -205,10 +205,6 @@ func indexHandler(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, `<a href="%s">生成视频</a><br><br>`, serverConf.DomainDir+web_makevideo)
 	}
 
-	if status == UserMakeVideoFail {
-		fmt.Fprintf(w, `很遗憾，之前的视频生成出错了。<br><br>`)
-	}
-
 	video_dir := filepath.Join(users.dir, fmt.Sprintf("%d", uid), "v.mp4")
 	exist, err := fileIsExist(video_dir)
 	if err != nil {
@@ -218,6 +214,10 @@ func indexHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	if exist {
 		fmt.Fprintf(w, `<a href="%s">视频下载</a><br><br>`, serverConf.DomainDir+web_video)
+	}
+
+	if status == UserMakeVideoFail {
+		fmt.Fprintf(w, `很遗憾，之前的视频生成出错了。<br>出错原因:%s<br><br>`, users.GetUserMakeVideoFailReason(uid))
 	}
 
 	fmt.Fprintln(w, `<a href="https://github.com/teawater/gps2video_web">关于</a>`)
