@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/scorredoira/email"
 	"github.com/teawater/go.strava"
 	"github.com/tkrajina/gpxgo/gpx"
 )
@@ -408,6 +409,7 @@ type MakeVideoOptions struct {
 	TrackId         int64
 	UseStravaPhotos bool
 	StravaPhotoSize int64
+	Email           string
 }
 
 func makevideoHandler(w http.ResponseWriter, r *http.Request) {
@@ -502,7 +504,7 @@ func makevideoHandler(w http.ResponseWriter, r *http.Request) {
 
 		gotPhotosTimezoneOption := false
 		moptions.UseStravaPhotos = false
-		sendemail = false
+		sendemail := false
 		config += "[optional]\n"
 		for index, form := range r.Form {
 			option, ok := makevideoOptions[index]
@@ -530,6 +532,15 @@ func makevideoHandler(w http.ResponseWriter, r *http.Request) {
 			case "sendemail":
 				sendemail = option.(*SendEmailOption).Form2Bool(form)
 			}
+		}
+		//Get athlete.Email
+		if sendemail {
+			athlete, err := service.Get().Do()
+			if err != nil {
+				httpShowError(w, "strava出错:"+err.Error())
+				return
+			}
+			moptions.Email = athlete.Email
 		}
 		//Get activity.StartDate and activity.StartDateLocal
 		activity, err := strava.NewActivitiesService(client).Get(trackId).IncludeAllEfforts().Do()
