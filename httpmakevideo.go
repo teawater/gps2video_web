@@ -7,6 +7,8 @@ import (
 	"log"
 	"math"
 	"net/http"
+	"net/mail"
+	"net/smtp"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/scorredoira/email"
 	"github.com/teawater/go.strava"
 	"github.com/tkrajina/gpxgo/gpx"
 )
@@ -38,6 +41,10 @@ func (this *BaseOption) Init(index string) {
 	if this.shortInfo == "" {
 		this.shortInfo = index
 	}
+}
+
+func (this *BaseOption) Show() bool {
+	return true
 }
 
 func (this *BaseOption) GetshortInfo() string {
@@ -75,6 +82,10 @@ func (this *BaseOption) Form2String(form []string) (val string, err error) {
 	return
 }
 
+func (this *BaseOption) Form2Config(form []string, uid uint64) (config string, err error) {
+	return
+}
+
 type Int64Option struct {
 	BaseOption
 	defaultVal string
@@ -82,8 +93,9 @@ type Int64Option struct {
 	max        int64 //If set to 0, will not check max
 }
 
-func (this *Int64Option) GetHtmlInput(index string) string {
-	return `<input type="text" name="` + index + `" value="` + this.defaultVal + `">`
+func (this *Int64Option) GetHtmlInput(service *strava.CurrentAthleteService, index string) (html string, err error) {
+	html = `<input type="text" name="` + index + `" value="` + this.defaultVal + `">`
+	return
 }
 
 func (this *Int64Option) Form2Int64(form []string) (num int64, err error) {
@@ -109,7 +121,28 @@ func (this *Int64Option) Form2Config(form []string, uid uint64) (config string, 
 		return
 	}
 
-	config = fmt.Sprintf("%s=%d", this.configName, num)
+	config = fmt.Sprintf("%s=%d\n", this.configName, num)
+	return
+}
+
+type TrackIdOption struct {
+	Int64Option
+}
+
+func (this *TrackIdOption) GetHtmlInput(service *strava.CurrentAthleteService, index string) (html string, err error) {
+	activities, err := service.ListActivities().Do()
+	if err != nil {
+		err = errors.New("strava出错:" + err.Error())
+		return
+	}
+
+	html += `<select name="` + index + `">`
+	for _, activity := range activities {
+		html += `<option value="` + fmt.Sprintf("%d", activity.Id) + `">`
+		html += activity.Name + activity.StartDateLocal.Format(activity_layout)
+		html += `</option>`
+	}
+	html += `</select>`
 	return
 }
 
@@ -117,8 +150,9 @@ type Float64Option struct {
 	BaseOption
 }
 
-func (this *Float64Option) GetHtmlInput(index string) string {
-	return `<input type="text" name="` + index + `" value="">`
+func (this *Float64Option) GetHtmlInput(service *strava.CurrentAthleteService, index string) (html string, err error) {
+	html = `<input type="text" name="` + index + `" value="">`
+	return
 }
 
 func (this *Float64Option) Form2Float64(form []string) (num float64, err error) {
@@ -144,9 +178,9 @@ func (this *PhotosTimezoneOption) Float642Config(num float64) (config string, er
 	}
 
 	if f == 0 {
-		config = fmt.Sprintf("%s=%d", this.configName, i)
+		config = fmt.Sprintf("%s=%d\n", this.configName, i)
 	} else {
-		config = fmt.Sprintf("%s=%f", this.configName, num)
+		config = fmt.Sprintf("%s=%f\n", this.configName, num)
 	}
 
 	return
@@ -169,17 +203,16 @@ type ListOption struct {
 	Info       []string
 }
 
-func (this *ListOption) GetHtmlInput(index string) string {
-	ret := ""
+func (this *ListOption) GetHtmlInput(service *strava.CurrentAthleteService, index string) (html string, err error) {
 	for i := range this.Info {
 		checked := ""
 		if this.Val[i] == this.defaultVal {
 			checked = ` checked="checked"`
 		}
-		ret += `<input type="radio" name="` + index + `" value="` + this.Val[i] + `"` + checked + `>`
-		ret += this.Info[i] + `<br>`
+		html += `<input type="radio" name="` + index + `" value="` + this.Val[i] + `"` + checked + `>`
+		html += this.Info[i] + `<br>`
 	}
-	return ret
+	return
 }
 
 type PhotosOption struct {
@@ -208,18 +241,53 @@ func (this *PhotosOption) Form2Config(form []string, uid uint64) (config string,
 		photos_dir = filepath.Join(users.dir, fmt.Sprintf("%d", uid), "output", "photos")
 	}
 
-	config = fmt.Sprintf("%s=%s", this.configName, photos_dir)
+	config = fmt.Sprintf("%s=%s\n", this.configName, photos_dir)
 	return
+}
+
+type BoolOption struct {
+	BaseOption
+	defaultVal bool
+}
+
+func (this *BoolOption) FormHaveData(form []string) bool {
+	return true
+}
+
+func (this *BoolOption) GetHtmlInput(service *strava.CurrentAthleteService, index string) (html string, err error) {
+	checked := ""
+	if this.defaultVal {
+		checked = ` checked="checked"`
+	}
+	html = fmt.Sprintf(`<input type="checkbox" name="%s" value="%s"%s>`,
+		index, index, checked)
+	return
+}
+
+func (this *BoolOption) Form2Bool(form []string) bool {
+	if len(form) < 1 {
+		return false
+	}
+	return true
+}
+
+type SendEmailOption struct {
+	BoolOption
+}
+
+func (this *SendEmailOption) Show() bool {
+	return (serverConf.SmtpServer != "")
 }
 
 type MakevideoOptioner interface {
 	Init(index string)
 
+	Show() bool
 	GetshortInfo() string
 	GetlongInfo() string
 	Getrequired() bool
 
-	GetHtmlInput(index string) string
+	GetHtmlInput(service *strava.CurrentAthleteService, index string) (html string, err error)
 
 	FormHaveData(form []string) bool
 	Form2Config(form []string, uid uint64) (config string, err error)
@@ -232,6 +300,16 @@ var photosTimezoneOption *PhotosTimezoneOption
 func makevideoOptionsInit() {
 	makevideoOptions = make(map[string]MakevideoOptioner)
 	show_index = make([]string, 0)
+
+	makevideoOptions["trackid"] = &TrackIdOption{
+		Int64Option: Int64Option{
+			BaseOption: BaseOption{
+				shortInfo: "选择要生成视频的轨迹",
+				required:  true,
+			},
+		},
+	}
+	show_index = append(show_index, "trackid")
 
 	makevideoOptions["video_width"] = &Int64Option{
 		BaseOption: BaseOption{
@@ -268,6 +346,17 @@ func makevideoOptionsInit() {
 		max:        640,
 	}
 	show_index = append(show_index, "video_border")
+
+	makevideoOptions["sendemail"] = &SendEmailOption{
+		BoolOption: BoolOption{
+			BaseOption: BaseOption{
+				shortInfo: "发送邮件",
+				longInfo:  "视频生成成功后，是否发到Strava注册信箱。",
+			},
+			defaultVal: true,
+		},
+	}
+	show_index = append(show_index, "sendemail")
 
 	makevideoOptions["video_limit_secs"] = &Int64Option{
 		BaseOption: BaseOption{
@@ -318,9 +407,10 @@ func makevideoOptionsInit() {
 }
 
 type MakeVideoOptions struct {
-	TruckId         int64
+	TrackId         int64
 	UseStravaPhotos bool
 	StravaPhotoSize int64
+	SendEmail       bool
 }
 
 func makevideoHandler(w http.ResponseWriter, r *http.Request) {
@@ -346,19 +436,6 @@ func makevideoHandler(w http.ResponseWriter, r *http.Request) {
 		moptions := new(MakeVideoOptions)
 
 		r.ParseForm()
-
-		//Get truck
-		truck := formGetOne(r, "truck")
-		if truck == "" {
-			w.WriteHeader(403)
-			return
-		}
-		var truck_id int64
-		if truck_id, err = strconv.ParseInt(truck, 10, 64); err != nil {
-			return
-		}
-		moptions.TruckId = truck_id
-		delete(r.Form, "truck")
 
 		output_dir := filepath.Join(users.dir, fmt.Sprintf("%d", uid), "output")
 		if dir_check_creat(output_dir, true) != nil {
@@ -390,11 +467,20 @@ func makevideoHandler(w http.ResponseWriter, r *http.Request) {
 				httpShowError(w, option.GetshortInfo()+err.Error())
 				return
 			}
-			config += c + "\n"
+			config += c
 
-			if index == "video_width" || index == "video_height" || index == "video_border" {
-				//err doesn't need check because form is used in option.Form2Config
-				num, _ := option.(*Int64Option).Form2Int64(form)
+			if index == "video_width" || index == "video_height" || index == "video_border" || index == "trackid" {
+				var num int64
+				var err error
+				if index == "trackid" {
+					num, err = option.(*TrackIdOption).Form2Int64(form)
+				} else {
+					num, err = option.(*Int64Option).Form2Int64(form)
+				}
+				if err != nil {
+					httpShowError(w, option.GetshortInfo()+err.Error())
+					return
+				}
 				switch index {
 				case "video_width":
 					video_width = num
@@ -402,6 +488,8 @@ func makevideoHandler(w http.ResponseWriter, r *http.Request) {
 					video_height = num
 				case "video_border":
 					video_border = num
+				case "trackid":
+					moptions.TrackId = num
 				}
 			}
 
@@ -421,7 +509,6 @@ func makevideoHandler(w http.ResponseWriter, r *http.Request) {
 		}
 
 		gotPhotosTimezoneOption := false
-		moptions.UseStravaPhotos = false
 		config += "[optional]\n"
 		for index, form := range r.Form {
 			option, ok := makevideoOptions[index]
@@ -436,20 +523,22 @@ func makevideoHandler(w http.ResponseWriter, r *http.Request) {
 				httpShowError(w, option.GetshortInfo()+err.Error())
 				return
 			}
-			config += c + "\n"
+			config += c
 
-			if index == "photos_timezone" {
+			switch index {
+			case "photos_timezone":
 				gotPhotosTimezoneOption = true
-			}
-			if index == "photos_dir" {
+			case "photos_dir":
 				photo, _ := option.(*PhotosOption).Form2String(form)
 				if photo == "strava" {
 					moptions.UseStravaPhotos = true
 				}
+			case "sendemail":
+				moptions.SendEmail = option.(*SendEmailOption).Form2Bool(form)
 			}
 		}
 		//Get activity.StartDate and activity.StartDateLocal
-		activity, err := strava.NewActivitiesService(client).Get(truck_id).IncludeAllEfforts().Do()
+		activity, err := strava.NewActivitiesService(client).Get(moptions.TrackId).IncludeAllEfforts().Do()
 		if err != nil {
 			httpShowError(w, "strava出错:"+err.Error())
 			return
@@ -476,8 +565,8 @@ func makevideoHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		//Truck
-		streams, err := strava.NewActivityStreamsService(client).Get(truck_id, []strava.StreamType{strava.StreamTypes.Location,
+		//Track
+		streams, err := strava.NewActivityStreamsService(client).Get(moptions.TrackId, []strava.StreamType{strava.StreamTypes.Location,
 			strava.StreamTypes.Elevation,
 			strava.StreamTypes.Time}).Do()
 		if err != nil {
@@ -542,32 +631,31 @@ func makevideoHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	activities, err := strava.NewCurrentAthleteService(client).ListActivities().Do()
-	if err != nil {
-		httpShowError(w, "strava出错:"+err.Error())
-		return
-	}
+	service := strava.NewCurrentAthleteService(client)
 
 	httpHead(w)
 	show := `带*的为必填项<br><br>`
 	show += `<form action="`
 	show += serverConf.DomainDir + web_makevideo
 	show += `" method="post">`
-	show += `选择要生成视频的轨迹<br><select name="truck">`
-	for _, activity := range activities {
-		show += `<option value="` + fmt.Sprintf("%d", activity.Id) + `">`
-		show += activity.Name + activity.StartDateLocal.Format(activity_layout)
-		show += `</option>`
-	}
-	show += `</select><br><br>`
 	for _, index := range show_index {
 		option := makevideoOptions[index]
+		if !option.Show() {
+			continue
+		}
 		if option.Getrequired() {
 			show += `*`
 		}
 		show += option.GetshortInfo() + `<br>`
-		show += option.GetlongInfo() + `<br>`
-		show += option.GetHtmlInput(index)
+		if option.GetlongInfo() != "" {
+			show += option.GetlongInfo() + `<br>`
+		}
+		html, err := option.GetHtmlInput(service, index)
+		if err != nil {
+			httpShowError(w, err.Error())
+			return
+		}
+		show += html
 		show += `<br><br>`
 	}
 	show += `<input type="submit" value="Submit" /> <input type="reset" value="Reset" /></form>`
@@ -582,6 +670,10 @@ func makeVideo(uid uint64, token string, options *MakeVideoOptions) {
 		err := users.SetUserStatus(uid, status, nil, reason)
 		if err != nil {
 			log.Println(uid, "makeVideo users.SetUserStatus:", err)
+		}
+
+		if options.SendEmail {
+			sendMail(uid, token, status, reason)
 		}
 	}()
 
@@ -599,7 +691,7 @@ func makeVideo(uid uint64, token string, options *MakeVideoOptions) {
 			return
 		}
 
-		photos, err := strava.NewActivitiesService(strava.NewClient(token)).ListPhotos(options.TruckId).Size(uint(options.StravaPhotoSize)).Do()
+		photos, err := strava.NewActivitiesService(strava.NewClient(token)).ListPhotos(options.TrackId).Size(uint(options.StravaPhotoSize)).Do()
 		if err != nil {
 			log.Println("makeVideo ListPhotos:", photos_dir, err)
 			return
@@ -659,5 +751,40 @@ func makeVideo(uid uint64, token string, options *MakeVideoOptions) {
 		reason = ""
 	} else {
 		log.Println("makeVideo", out_string)
+	}
+}
+
+func sendMail(uid uint64, token string, status int, reason string) {
+	if serverConf.SmtpServer == "" {
+		return
+	}
+
+	//Get athlete.Email
+	athlete, err := strava.NewCurrentAthleteService(strava.NewClient(token)).Get().Do()
+	if err != nil {
+		log.Println("sendMail", "strava.NewCurrentAthleteService(strava.NewClient(token)).Get().Do()", uid, err)
+		return
+	}
+
+	var m *email.Message
+	if status == UserMakeVideoFail {
+		m = email.NewMessage("视频生成失败", "失败原因:"+reason)
+	} else {
+		m = email.NewMessage("视频生成成功", "可从附件中取得视频")
+	}
+	m.From = mail.Address{Name: "GPS2Video", Address: serverConf.SmtpEmail}
+	m.To = []string{athlete.Email}
+	if status == UserNormal {
+		if err := m.Attach(filepath.Join(users.dir, fmt.Sprintf("%d", uid), "v.mp4")); err != nil {
+			log.Println("sendMail", "m.Attach", uid, err)
+			return
+		}
+	}
+
+	auth := smtp.PlainAuth("", serverConf.SmtpEmail, serverConf.SmtpPassword, serverConf.SmtpServer)
+
+	if err := email.Send(fmt.Sprintf("%s:%d", serverConf.SmtpServer, serverConf.SmtpPort), auth, m); err != nil {
+		log.Println("sendMail", "email.Send", uid, err)
+		return
 	}
 }

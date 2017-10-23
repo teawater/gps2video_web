@@ -24,6 +24,10 @@ type Server struct {
 	WorkDir        string `default:"./work/"`
 	Ffmpeg         string `default:"ffmpeg"`
 	Google_map_key string `required:"true"`
+	SmtpServer     string `default:""`
+	SmtpPort       int    `default:"25"`
+	SmtpEmail      string `default:""`
+	SmtpPassword   string `default:""`
 }
 
 var serverConf *Server
